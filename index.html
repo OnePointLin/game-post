@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>郵局蓋章大作戰</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fde8d7; overflow: hidden; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", "Heiti TC", sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  #game {
+    width: min(100vw, calc(100vh * 1000 / 650));
+    aspect-ratio: 1000 / 650;
+    display: block; touch-action: manipulation;
+  }
+  text { font-family: inherit; }
+  .bob { animation: bob 1.1s ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+  @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+  .puff { animation: puff 1s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes puff { 0% { transform: translateY(0) scale(.6); opacity: .9; } 100% { transform: translateY(-26px) scale(1.25); opacity: 0; } }
+  .float { animation: float 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes float { 0%,100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-8px) rotate(2deg); } }
+  .btn { cursor: pointer; }
+  .btn .face { transition: transform .08s; }
+  .btn:active .face { transform: translateY(4px); }
+  .btn.disabled { opacity: .38; cursor: not-allowed; }
+  .btn.disabled:active .face { transform: none; }
+  .fade { transition: opacity .25s; }
+  .warn { animation: warn .6s steps(2) infinite; }
+  @keyframes warn { 50% { opacity: .35; } }
+  .nopoint { pointer-events: none; }
+</style>
+</head>
+<body>
+<svg id="game" viewBox="0 0 1000 650" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#8a5a3c" flood-opacity=".25"/>
+    </filter>
+    <pattern id="stripes" width="44" height="44" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="22" height="44" fill="#ffe9c9" opacity=".55"/>
+    </pattern>
+    <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#b9dfc4" stroke-width="1"/>
+    </pattern>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="2.2" fill="#f6d5b8"/>
+      <circle cx="19" cy="19" r="2.2" fill="#f6d5b8"/>
+    </pattern>
+  </defs>
+</svg>
+
+<script>
+(() => {
+'use strict';
+
+/* ========== 基本工具 ========== */
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('game');
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) {
+    if (k === 'text') e.textContent = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const clear = g => { while (g.firstChild) g.removeChild(g.firstChild); };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+function tween(dur, fn, ease = easeOut) {
+  return new Promise(res => {
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - t0) / dur);
+      fn(ease(t));
+      if (t < 1) requestAnimationFrame(step); else res();
+    }
+    requestAnimationFrame(step);
+  });
+}
+function toSVG(e) {
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+/* ========== 音效（WebAudio 合成，不需任何檔案） ========== */
+let actx = null, muted = false;
+function tone(freq, dur, type = 'sine', vol = .15, slide = 0, delay = 0) {
+  if (muted) return;
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    const t = actx.currentTime + delay;
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(freq * slide, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(actx.destination);
+    o.start(t); o.stop(t + dur + .02);
+  } catch (e) {}
+}
+const sfx = {
+  stamp: () => { tone(140, .12, 'square', .1, .45); tone(90, .1, 'sine', .15, .6, .01); },
+  ding: () => { tone(880, .14, 'sine', .14); tone(1320, .22, 'sine', .12, 0, .09); },
+  weigh: () => tone(620, .08, 'triangle', .12),
+  error: () => { tone(220, .25, 'sawtooth', .1, .7); tone(160, .35, 'sawtooth', .1, .7, .2); },
+  pop: () => tone(480, .1, 'sine', .12, 1.8),
+  back: () => tone(520, .18, 'triangle', .12, .55),
+  click: () => tone(700, .05, 'triangle', .08),
+};
+
+/* ========== 遊戲資料 ========== */
+const RATES = [
+  { type: 'letter', max: 20, fee: 8 },
+  { type: 'letter', max: 50, fee: 16 },
+  { type: 'letter', max: 100, fee: 24 },
+  { type: 'letter', max: 250, fee: 40 },
+  { type: 'letter', max: 500, fee: 72 },
+  { type: 'parcel', max: 1000, fee: 95 },
+  { type: 'parcel', max: 2000, fee: 125 },
+  { type: 'parcel', max: 3000, fee: 155 },
+  { type: 'parcel', max: 5000, fee: 205 },
+];
+const DENOMS = [1, 2, 3, 5, 7, 8, 10, 12, 15, 20, 25, 32, 50];
+const COLORS = ['#ffb5c2', '#a0d2eb', '#b8e0a8', '#ffd98e', '#cdb4db', '#ffc09f', '#9ad1c9', '#f7b2d9'];
+const ENV = ['#ffffff', '#fff0f3', '#eef6ff', '#fffbe6', '#f1fbef'];
+const NAMES = ['林小美', '陳大熊', '王小明', '張兔兔', '李阿喵', '黃小雞', '吳柚子', '周布丁', '許湯圓', '鄭豆花', '蔡麻糬', '劉芋圓'];
+const ADDRS = ['台北市大安區幸福路 8 號', '新北市板橋區棉花糖街 12 號', '台中市西屯區彩虹巷 3 號', '台南市中西區布丁路 21 號',
+  '高雄市苓雅區海鷗街 66 號', '花蓮縣吉安鄉月光路 5 號', '新竹市東區星星路 18 號', '宜蘭縣礁溪鄉溫泉路 7 號'];
+const SENDERS = ['小熊', '喵喵', '兔兔', '小黃', '阿柴', '胖虎'];
+const GREET = ['麻煩你了～', '我要寄這個！', '請幫我寄～', '這個要寄喔！', '拜託了～'];
+const BYE = ['謝謝～', '辛苦了！', '掰掰～', '感謝您！'];
+const DIFF = {
+  easy:   { name: '輕鬆', mps: 2.0, s0: 11,  s1: 7,   qmax: 8 },
+  normal: { name: '普通', mps: 2.0, s0: 9,   s1: 5.2, qmax: 7 },
+  hard:   { name: '忙碌', mps: 2.2, s0: 7.5, s1: 4,   qmax: 6 },
+};
+const START_MIN = 8 * 60 + 30, END_MIN = 17 * 60;
+const today = new Date();
+const DATE_STR = `${today.getFullYear() - 1911}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}`;
+
+/* ========== 圖層 ========== */
+const L = {};
+['bg', 'queue', 'desk', 'item', 'ghost', 'ui', 'boss', 'hud', 'pause', 'overlay'].forEach(n => L[n] = el('g', { id: 'L_' + n }, svg));
+L.ghost.classList.add('nopoint');
+L.ui.classList.add('nopoint');
+
+let D = DIFF.normal;
+let G = { state: 'menu', runId: 0, waiting: [], all: [] };
+const H = {};   // HUD 元素
+const boss = { x: 1250, tx: 1250, active: false, elapsed: 0 };
+
+/* ========== 郵票圖案 ========== */
+const ICONS = {
+  flower(g, x, y) {
+    for (let i = 0; i < 5; i++) {
+      const a = (i * 72 - 90) * Math.PI / 180;
+      el('circle', { cx: x + Math.cos(a) * 6.5, cy: y + Math.sin(a) * 6.5, r: 5, fill: '#fff' }, g);
+    }
+    el('circle', { cx: x, cy: y, r: 4, fill: '#ffb703' }, g);
+  },
+  heart(g, x, y) {
+    el('path', { d: `M ${x} ${y + 9} C ${x - 15} ${y} ${x - 9} ${y - 12} ${x} ${y - 4} C ${x + 9} ${y - 12} ${x + 15} ${y} ${x} ${y + 9} Z`, fill: '#ff5d8f' }, g);
+  },
+  star(g, x, y) {
+    let pts = [];
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 ? 4.8 : 11, a = (i * 36 - 90) * Math.PI / 180;
+      pts.push((x + Math.cos(a) * r).toFixed(1) + ',' + (y + 1 + Math.sin(a) * r).toFixed(1));
+    }
+    el('polygon', { points: pts.join(' '), fill: '#fff6a5', stroke: '#e9a23b', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
+  },
+  cat(g, x, y) {
+    el('polygon', { points: `${x - 9},${y - 3} ${x - 7},${y - 12} ${x - 2},${y - 7}`, fill: '#fff' }, g);
+    el('polygon', { points: `${x + 9},${y - 3} ${x + 7},${y - 12} ${x + 2},${y - 7}`, fill: '#fff' }, g);
+    el('circle', { cx: x, cy: y + 1, r: 9, fill: '#fff' }, g);
+    el('circle', { cx: x - 3.5, cy: y, r: 1.5, fill: '#333' }, g);
+    el('circle', { cx: x + 3.5, cy: y, r: 1.5, fill: '#333' }, g);
+    el('circle', { cx: x, cy: y + 3.5, r: 1.2, fill: '#ff8fa3' }, g);
+  },
+  fish(g, x, y) {
+    el('polygon', { points: `${x + 6},${y} ${x + 14},${y - 6} ${x + 14},${y + 6}`, fill: '#fff' }, g);
+    el('ellipse', { cx: x - 2, cy: y, rx: 10, ry: 6.5, fill: '#fff' }, g);
+    el('circle', { cx: x - 6, cy: y - 1.5, r: 1.6, fill: '#333' }, g);
+  },
+  mountain(g, x, y) {
+    el('circle', { cx: x + 7, cy: y - 6, r: 4.5, fill: '#ffb703' }, g);
+    el('polygon', { points: `${x - 13},${y + 9} ${x - 3},${y - 5} ${x + 3},${y + 2} ${x + 7},${y - 2} ${x + 13},${y + 9}`, fill: '#fff' }, g);
+  },
+  bird(g, x, y) {
+    el('circle', { cx: x - 1, cy: y + 1, r: 8, fill: '#fff' }, g);
+    el('polygon', { points: `${x + 6},${y - 2} ${x + 12},${y} ${x + 6},${y + 2}`, fill: '#ffb703' }, g);
+    el('circle', { cx: x + 2, cy: y - 2, r: 1.4, fill: '#333' }, g);
+    el('path', { d: `M ${x - 6} ${y + 1} Q ${x - 2} ${y + 7} ${x + 2} ${y + 2}`, fill: 'none', stroke: '#ddd', 'stroke-width': 1.5 }, g);
+  },
+};
+const ICON_KEYS = Object.keys(ICONS);
+
+function drawStamp(p, x, y, v, meta, bg) {
+  const g = el('g', { transform: `translate(${x},${y})` }, p);
+  el('rect', { width: 48, height: 58, fill: '#fffdf7' }, g);
+  el('rect', { width: 48, height: 58, fill: 'none', stroke: bg, 'stroke-width': 5, 'stroke-dasharray': '0 6.6', 'stroke-linecap': 'round' }, g);
+  el('rect', { x: 5, y: 5, width: 38, height: 48, rx: 3, fill: meta.color }, g);
+  ICONS[meta.icon](g, 24, 20);
+  const t = el('text', { x: 24, y: 48, 'text-anchor': 'middle', 'font-size': v >= 10 ? 16 : 17, 'font-weight': 900, fill: '#3d2c2e', text: v }, g);
+  el('tspan', { 'font-size': 8, dx: 1, text: '元' }, t);
+  return g;
+}
+
+function drawPostmark(parent, x, y, rot, timeStr) {
+  const g = el('g', { transform: `translate(${x},${y}) rotate(${rot})`, opacity: .85 }, parent);
+  const ink = '#3d2f6e';
+  for (const k of [-13, 0, 13]) {
+    el('path', { d: `M 33 ${k} q 8 -6 16 0 t 16 0 t 16 0 t 16 0`, fill: 'none', stroke: ink, 'stroke-width': 2.6, 'stroke-linecap': 'round' }, g);
+  }
+  el('circle', { r: 30, fill: 'rgba(255,255,255,0.05)', stroke: ink, 'stroke-width': 3 }, g);
+  el('circle', { r: 23, fill: 'none', stroke: ink, 'stroke-width': 1.3 }, g);
+  el('line', { x1: -23, y1: -6, x2: 23, y2: -6, stroke: ink, 'stroke-width': 1.3 }, g);
+  el('line', { x1: -23, y1: 8, x2: 23, y2: 8, stroke: ink, 'stroke-width': 1.3 }, g);
+  el('text', { x: 0, y: -10, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 700, fill: ink, text: '幸福郵局' }, g);
+  el('text', { x: 0, y: 4.5, 'text-anchor': 'middle', 'font-size': 8.5, 'font-weight': 800, fill: ink, text: DATE_STR }, g);
+  el('text', { x: 0, y: 19, 'text-anchor': 'middle', 'font-size': 8, 'font-weight': 700, fill: ink, text: timeStr }, g);
+  return g;
+}
+
+/* ========== 吉祥物 / 魷魚 ========== */
+function drawMascot(parent, x, y, happy = true) {
+  const g = el('g', { transform: `translate(${x},${y})` }, parent);
+  const f = el('g', { class: 'float' }, g);
+  el('ellipse', { cx: -78, cy: 10, rx: 12, ry: 8, fill: '#fff', stroke: '#e0c3a8', 'stroke-width': 3 }, f);
+  el('ellipse', { cx: 78, cy: 10, rx: 12, ry: 8, fill: '#fff', stroke: '#e0c3a8', 'stroke-width': 3 }, f);
+  el('rect', { x: -70, y: -45, width: 140, height: 90, rx: 12, fill: '#fff', stroke: '#e0c3a8', 'stroke-width': 3 }, f);
+  el('path', { d: 'M -68 -42 L 0 6 L 68 -42', fill: 'none', stroke: '#e0c3a8', 'stroke-width': 3, 'stroke-linejoin': 'round' }, f);
+  const st = el('g', { transform: 'translate(36,-38) rotate(8)' }, f);
+  el('rect', { width: 26, height: 30, fill: '#ffb5c2', stroke: '#fff', 'stroke-width': 2 }, st);
+  ICONS.heart(st, 13, 15);
+  if (happy) {
+    el('path', { d: 'M -28 20 Q -22 13 -16 20', fill: 'none', stroke: '#3a2a2a', 'stroke-width': 3, 'stroke-linecap': 'round' }, f);
+    el('path', { d: 'M 16 20 Q 22 13 28 20', fill: 'none', stroke: '#3a2a2a', 'stroke-width': 3, 'stroke-linecap': 'round' }, f);
+  } else {
+    el('circle', { cx: -22, cy: 18, r: 5, fill: '#3a2a2a' }, f);
+    el('circle', { cx: 22, cy: 18, r: 5, fill: '#3a2a2a' }, f);
+    el('circle', { cx: -20.5, cy: 16.5, r: 1.6, fill: '#fff' }, f);
+    el('circle', { cx: 23.5, cy: 16.5, r: 1.6, fill: '#fff' }, f);
+  }
+  el('ellipse', { cx: -36, cy: 28, rx: 8, ry: 4.5, fill: '#ff9fb0', opacity: .75 }, f);
+  el('ellipse', { cx: 36, cy: 28, rx: 8, ry: 4.5, fill: '#ff9fb0', opacity: .75 }, f);
+  el('path', { d: 'M -8 27 Q 0 35 8 27', fill: 'none', stroke: '#3a2a2a', 'stroke-width': 3, 'stroke-linecap': 'round' }, f);
+  return g;
+}
+
+function drawSquid(parent, x, y) {
+  const g = el('g', { transform: `translate(${x},${y}) scale(.9)` }, parent);
+  // 鍋子
+  el('rect', { x: 110, y: 40, width: 120, height: 16, rx: 8, fill: '#9a8c98' }, g);
+  el('ellipse', { cx: 0, cy: 50, rx: 122, ry: 28, fill: '#4a4e69' }, g);
+  el('ellipse', { cx: 0, cy: 45, rx: 108, ry: 19, fill: '#22223b' }, g);
+  // 觸手
+  const c = '#ff8fa3';
+  for (let i = 0; i < 6; i++) {
+    const tx = -40 + i * 16;
+    el('path', { d: `M ${tx} -6 q 9 12 0 24 t 0 24`, fill: 'none', stroke: c, 'stroke-width': 10, 'stroke-linecap': 'round' }, g);
+  }
+  // 身體
+  el('polygon', { points: '-36,-88 -72,-58 -42,-52', fill: c }, g);
+  el('polygon', { points: '36,-88 72,-58 42,-52', fill: c }, g);
+  el('path', { d: 'M 0 -125 C 48 -92 58 -30 50 0 L -50 0 C -58 -30 -48 -92 0 -125 Z', fill: c }, g);
+  el('ellipse', { cx: -14, cy: -80, rx: 8, ry: 14, fill: '#fff', opacity: .35 }, g);
+  for (const ex of [-18, 18]) {
+    el('circle', { cx: ex, cy: -30, r: 11, fill: '#fff' }, g);
+    el('circle', { cx: ex, cy: -27, r: 6, fill: '#3a2a2a' }, g);
+    el('circle', { cx: ex + 2, cy: -29, r: 2, fill: '#fff' }, g);
+  }
+  el('ellipse', { cx: 0, cy: -10, rx: 5, ry: 6, fill: '#c9184a' }, g);
+  el('path', { d: 'M 58 -100 Q 66 -86 58 -80 Q 50 -86 58 -100 Z', fill: '#8ecae6' }, g);
+  // 熱氣
+  for (const sx of [-90, 80]) {
+    const p = el('path', { d: `M ${sx} 10 q -8 -12 0 -24 t 0 -24`, fill: 'none', stroke: '#cbc0d3', 'stroke-width': 5, 'stroke-linecap': 'round', class: 'puff' }, g);
+    p.style.animationDuration = '1.6s';
+  }
+  return g;
+}
+
+/* ========== 背景 ========== */
+function buildBG() {
+  const g = L.bg;
+  el('rect', { x: 0, y: 0, width: 1000, height: 340, fill: '#fff1dc' }, g);
+  el('rect', { x: 0, y: 0, width: 1000, height: 340, fill: 'url(#stripes)' }, g);
+  el('rect', { x: 0, y: 288, width: 1000, height: 52, fill: '#f3d3ad' }, g);
+  el('rect', { x: 0, y: 284, width: 1000, height: 6, fill: '#e2b88c' }, g);
+
+  // 招牌
+  const sg = el('g', { transform: 'translate(30,70)' }, g);
+  el('rect', { width: 212, height: 50, rx: 16, fill: '#52b788', filter: 'url(#sh)' }, sg);
+  el('rect', { x: 16, y: 14, width: 34, height: 24, rx: 4, fill: '#fff' }, sg);
+  el('path', { d: 'M 17 15 L 33 28 L 49 15', fill: 'none', stroke: '#52b788', 'stroke-width': 2.5, 'stroke-linejoin': 'round' }, sg);
+  el('text', { x: 128, y: 34, 'text-anchor': 'middle', 'font-size': 25, 'font-weight': 900, fill: '#fff', text: '幸福郵局' }, sg);
+
+  // 彩旗
+  const p0 = [270, 66], p1 = [470, 92], p2 = [660, 66];
+  el('path', { d: `M ${p0} Q ${p1} ${p2}`, fill: 'none', stroke: '#c9a27e', 'stroke-width': 2 }, g);
+  const fc = ['#ffb5c2', '#a0d2eb', '#ffd98e', '#b8e0a8', '#cdb4db'];
+  for (let i = 0; i < 10; i++) {
+    const t = .05 + i * .1;
+    const x = (1 - t) * (1 - t) * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0];
+    const y = (1 - t) * (1 - t) * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1];
+    el('polygon', { points: `${x - 11},${y} ${x + 11},${y} ${x},${y + 26}`, fill: fc[i % 5] }, g);
+  }
+
+  // 郵資表海報
+  const pg = el('g', { transform: 'translate(690,72)' }, g);
+  el('rect', { width: 180, height: 252, rx: 14, fill: '#fff', stroke: '#f2cc8f', 'stroke-width': 3, filter: 'url(#sh)' }, pg);
+  el('circle', { cx: 90, cy: 7, r: 6, fill: '#e07a5f' }, pg);
+  el('text', { x: 90, y: 34, 'text-anchor': 'middle', 'font-size': 18, 'font-weight': 900, fill: '#e07a5f', text: '郵資表' }, pg);
+  let yy = 58;
+  RATES.forEach((r, i) => {
+    if (i === 5) { el('line', { x1: 14, y1: yy - 15, x2: 166, y2: yy - 15, stroke: '#f2cc8f', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }, pg); yy += 4; }
+    const w = r.max >= 1000 ? (r.max / 1000) + 'kg' : r.max + 'g';
+    el('text', { x: 16, y: yy, 'font-size': 13.5, fill: '#6b5446', 'font-weight': 700, text: (r.type === 'letter' ? '信件' : '包裹') + ' ≤ ' + w }, pg);
+    el('text', { x: 164, y: yy, 'text-anchor': 'end', 'font-size': 13.5, fill: '#e07a5f', 'font-weight': 900, text: r.fee + ' 元' }, pg);
+    yy += 21.5;
+  });
+
+  // 掛鐘
+  const cg = el('g', { transform: 'translate(935,125)' }, g);
+  el('circle', { r: 44, fill: '#fff', stroke: '#e07a5f', 'stroke-width': 6, filter: 'url(#sh)' }, cg);
+  for (let i = 0; i < 12; i++) {
+    const a = i * 30 * Math.PI / 180;
+    el('circle', { cx: Math.sin(a) * 33, cy: -Math.cos(a) * 33, r: i % 3 ? 1.8 : 3, fill: '#c9a27e' }, cg);
+  }
+  H.hourHand = el('line', { x1: 0, y1: 0, x2: 0, y2: -18, stroke: '#5a4a42', 'stroke-width': 5, 'stroke-linecap': 'round' }, cg);
+  H.minHand = el('line', { x1: 0, y1: 0, x2: 0, y2: -28, stroke: '#e07a5f', 'stroke-width': 3, 'stroke-linecap': 'round' }, cg);
+  el('circle', { r: 4, fill: '#5a4a42' }, cg);
+
+  // 盆栽
+  const pl = el('g', { transform: 'translate(935,280)' }, g);
+  el('ellipse', { cx: -12, cy: -40, rx: 10, ry: 24, fill: '#74c69d', transform: 'rotate(-25 -12 -40)' }, pl);
+  el('ellipse', { cx: 12, cy: -42, rx: 10, ry: 24, fill: '#52b788', transform: 'rotate(25 12 -42)' }, pl);
+  el('ellipse', { cx: 0, cy: -50, rx: 9, ry: 26, fill: '#95d5b2' }, pl);
+  el('path', { d: 'M -24 -22 L 24 -22 L 18 6 L -18 6 Z', fill: '#e9c46a' }, pl);
+  el('rect', { x: -27, y: -26, width: 54, height: 9, rx: 4, fill: '#f4a261' }, pl);
+
+  // 排隊溢出提示
+  H.plus = el('g', { transform: 'translate(70,170)', style: 'display:none' }, L.hud);
+  el('rect', { x: -40, y: -18, width: 80, height: 32, rx: 16, fill: '#e63946' }, H.plus);
+  H.plusText = el('text', { x: 0, y: 5, 'text-anchor': 'middle', 'font-size': 16, 'font-weight': 900, fill: '#fff', text: '+0 人' }, H.plus);
+}
+
+/* ========== 櫃檯 ========== */
+const BTN = {};
+function makeButton(x, y, w, h, color, shade, label, key, icon, onClick) {
+  const g = el('g', { transform: `translate(${x},${y})`, class: 'btn' }, L.desk);
+  el('rect', { x: 0, y: 5, width: w, height: h, rx: 18, fill: shade }, g);
+  const face = el('g', { class: 'face' }, g);
+  el('rect', { width: w, height: h, rx: 18, fill: color }, face);
+  el('rect', { x: 12, y: 6, width: w - 24, height: 7, rx: 3.5, fill: '#fff', opacity: .35 }, face);
+  icon(face, 36, h / 2);
+  el('text', { x: w / 2 + 12, y: h / 2 + 7, 'text-anchor': 'middle', 'font-size': 21, 'font-weight': 900, fill: '#4a3b33', text: label }, face);
+  el('rect', { x: w - 32, y: h - 25, width: 22, height: 18, rx: 5, fill: '#fff', opacity: .6 }, face);
+  el('text', { x: w - 21, y: h - 11.5, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 900, fill: '#7a6458', text: key }, face);
+  g.addEventListener('pointerdown', () => {
+    if (g.classList.contains('disabled')) return;
+    onClick();
+  });
+  return g;
+}
+
+function buildDesk() {
+  const d = L.desk;
+  el('rect', { x: 0, y: 340, width: 1000, height: 310, fill: '#f9e4c8' }, d);
+  el('rect', { x: 0, y: 340, width: 1000, height: 310, fill: 'url(#dots)', opacity: .5 }, d);
+  el('rect', { x: -10, y: 328, width: 1020, height: 18, rx: 8, fill: '#c98f5a' }, d);
+  el('rect', { x: -10, y: 330, width: 1020, height: 4, fill: '#e0ae7c' }, d);
+
+  // 桌墊
+  el('rect', { x: 218, y: 378, width: 364, height: 236, rx: 16, fill: '#cfe9d6', stroke: '#a8d5b5', 'stroke-width': 2 }, d);
+  el('rect', { x: 218, y: 378, width: 364, height: 236, rx: 16, fill: 'url(#grid)', opacity: .8 }, d);
+
+  // 磅秤
+  const s = el('g', {}, d);
+  el('rect', { x: 690, y: 462, width: 20, height: 12, fill: '#b0bec5' }, s);
+  el('rect', { x: 610, y: 470, width: 180, height: 112, rx: 20, fill: '#fdfdfd', stroke: '#d6c7b8', 'stroke-width': 2.5, filter: 'url(#sh)' }, s);
+  el('rect', { x: 622, y: 448, width: 156, height: 16, rx: 8, fill: '#cfd8dc', stroke: '#b0bec5', 'stroke-width': 2 }, s);
+  el('rect', { x: 630, y: 494, width: 140, height: 70, rx: 10, fill: '#2f3e46' }, s);
+  H.dispType = el('text', { x: 700, y: 511, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 700, fill: '#9ef0c5', text: '電子秤' }, s);
+  H.dispW = el('text', { x: 700, y: 533, 'text-anchor': 'middle', 'font-size': 19, 'font-weight': 700, fill: '#9ef0c5', 'font-family': 'Menlo, Consolas, monospace', text: '---- g' }, s);
+  H.dispF = el('text', { x: 700, y: 556, 'text-anchor': 'middle', 'font-size': 17, 'font-weight': 900, fill: '#ffe08a', text: '郵資 -- 元' }, s);
+  el('circle', { cx: 642, cy: 574, r: 3, fill: '#e07a5f' }, s);
+  el('circle', { cx: 758, cy: 574, r: 3, fill: '#95d5b2' }, s);
+
+  // 寄件箱
+  const b = el('g', {}, d);
+  el('rect', { x: 828, y: 460, width: 150, height: 22, rx: 8, fill: '#c96f3a' }, b);
+  H.pile = el('g', {}, b);
+  el('path', { d: 'M 822 480 L 984 480 L 972 628 Q 971 638 961 638 L 845 638 Q 835 638 834 628 Z', fill: '#f4a261' }, b);
+  el('rect', { x: 818, y: 472, width: 170, height: 16, rx: 8, fill: '#e76f51' }, b);
+  el('rect', { x: 850, y: 512, width: 106, height: 60, rx: 14, fill: '#fff8f0' }, b);
+  el('text', { x: 903, y: 537, 'text-anchor': 'middle', 'font-size': 18, 'font-weight': 900, fill: '#e76f51', text: '待寄出' }, b);
+  H.binCount = el('text', { x: 903, y: 560, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 700, fill: '#a0785a', text: '0 件' }, b);
+  el('path', { d: 'M 880 595 l 10 -10 l 10 10 m -10 -10 v 24', fill: 'none', stroke: '#fff8f0', 'stroke-width': 0 }, b);
+
+  // 按鈕
+  BTN.weigh = makeButton(22, 382, 176, 58, '#9fd3ea', '#6fa9c4', '秤重', 'W', (g, cx, cy) => {
+    el('rect', { x: cx - 14, y: cy - 8, width: 28, height: 4, rx: 2, fill: '#fff' }, g);
+    el('rect', { x: cx - 2, y: cy - 5, width: 4, height: 6, fill: '#fff' }, g);
+    el('rect', { x: cx - 12, y: cy + 1, width: 24, height: 11, rx: 3, fill: '#fff' }, g);
+  }, doWeigh);
+  BTN.ret = makeButton(22, 454, 176, 58, '#ffb4a2', '#d98a78', '退回', 'R', (g, cx, cy) => {
+    el('path', { d: `M ${cx + 11} ${cy + 10} Q ${cx + 11} ${cy - 5} ${cx - 3} ${cy - 5} L ${cx - 3} ${cy - 12} L ${cx - 14} ${cy - 2} L ${cx - 3} ${cy + 8} L ${cx - 3} ${cy + 1} Q ${cx + 5} ${cy + 1} ${cx + 5} ${cy + 10} Z`, fill: '#fff' }, g);
+  }, doReturn);
+  BTN.send = makeButton(22, 526, 176, 58, '#a7dcb9', '#72b58b', '寄出', 'S', (g, cx, cy) => {
+    el('rect', { x: cx - 13, y: cy - 9, width: 26, height: 18, rx: 3, fill: '#fff' }, g);
+    el('path', { d: `M ${cx - 12} ${cy - 8} L ${cx} ${cy + 1} L ${cx + 12} ${cy - 8}`, fill: 'none', stroke: '#72b58b', 'stroke-width': 2.2 }, g);
+  }, doSend);
+
+  // 印台裝飾
+  el('rect', { x: 36, y: 602, width: 78, height: 30, rx: 9, fill: '#6d597a' }, d);
+  el('rect', { x: 44, y: 607, width: 62, height: 18, rx: 6, fill: '#3d2f6e' }, d);
+  el('rect', { x: 128, y: 612, width: 40, height: 18, rx: 4, fill: '#3d2f6e' }, d);
+  el('rect', { x: 140, y: 596, width: 16, height: 18, fill: '#c98f5a' }, d);
+  el('circle', { cx: 148, cy: 592, r: 11, fill: '#e07a5f' }, d);
+
+  H.hint = el('text', { x: 400, y: 636, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 700, fill: '#a0785a', text: '' }, d);
+
+  // 蓋章預覽
+  H.ghost = el('g', { style: 'display:none', opacity: .35 }, L.ghost);
+  const gi = el('g', {}, H.ghost);
+  for (const k of [-13, 0, 13]) el('path', { d: `M 33 ${k} q 8 -6 16 0 t 16 0 t 16 0 t 16 0`, fill: 'none', stroke: '#3d2f6e', 'stroke-width': 2.6 }, gi);
+  el('circle', { r: 30, fill: 'none', stroke: '#3d2f6e', 'stroke-width': 3 }, gi);
+  el('circle', { r: 23, fill: 'none', stroke: '#3d2f6e', 'stroke-width': 1.3 }, gi);
+}
+
+/* ========== HUD ========== */
+function hudLabel(x, t) { el('text', { x, y: 38, 'font-size': 14, 'font-weight': 700, fill: '#b08968', text: t }, L.hud); }
+function buildHUD() {
+  const h = L.hud;
+  el('rect', { x: 10, y: 8, width: 980, height: 48, rx: 18, fill: '#fff', opacity: .93, stroke: '#f2cc8f', 'stroke-width': 2.5 }, h);
+  const ci = el('g', { transform: 'translate(36,32)' }, h);
+  el('circle', { r: 13, fill: '#fff', stroke: '#e07a5f', 'stroke-width': 3 }, ci);
+  el('line', { x1: 0, y1: 0, x2: 0, y2: -7, stroke: '#5a4a42', 'stroke-width': 2.5, 'stroke-linecap': 'round' }, ci);
+  el('line', { x1: 0, y1: 0, x2: 5, y2: 2, stroke: '#5a4a42', 'stroke-width': 2.5, 'stroke-linecap': 'round' }, ci);
+  H.time = el('text', { x: 58, y: 41, 'font-size': 24, 'font-weight': 900, fill: '#e07a5f', text: '08:30' }, h);
+  hudLabel(160, '分數'); H.score = el('text', { x: 196, y: 41, 'font-size': 22, 'font-weight': 900, fill: '#5a4a42', text: '0' }, h);
+  hudLabel(282, '寄出'); H.sent = el('text', { x: 318, y: 41, 'font-size': 22, 'font-weight': 900, fill: '#5a4a42', text: '0' }, h);
+  hudLabel(395, '排隊'); H.queue = el('text', { x: 431, y: 41, 'font-size': 22, 'font-weight': 900, fill: '#5a4a42', text: '0 人' }, h);
+  hudLabel(530, '主管怒氣');
+  H.anger = [];
+  for (let i = 0; i < 3; i++) {
+    const a = el('g', { transform: `translate(${612 + i * 36},32)` }, h);
+    const c = el('circle', { r: 14, fill: '#ece4da' }, a);
+    el('path', { d: 'M -8 -6 L -2 -3 M 8 -6 L 2 -3', stroke: '#7a6458', 'stroke-width': 2.4, 'stroke-linecap': 'round' }, a);
+    el('circle', { cx: -4.5, cy: 1, r: 1.8, fill: '#7a6458' }, a);
+    el('circle', { cx: 4.5, cy: 1, r: 1.8, fill: '#7a6458' }, a);
+    el('path', { d: 'M -5 9 Q 0 5 5 9', fill: 'none', stroke: '#7a6458', 'stroke-width': 2.2, 'stroke-linecap': 'round' }, a);
+    H.anger.push(c);
+  }
+  H.combo = el('text', { x: 790, y: 41, 'text-anchor': 'middle', 'font-size': 18, 'font-weight': 900, fill: '#e76f51', text: '' }, h);
+
+  // 暫停
+  const pb = el('g', { transform: 'translate(912,32)', class: 'btn' }, h);
+  el('circle', { r: 17, fill: '#ffd98e' }, pb);
+  el('rect', { x: -6, y: -7, width: 4, height: 14, rx: 1.5, fill: '#7a5c3e' }, pb);
+  el('rect', { x: 2, y: -7, width: 4, height: 14, rx: 1.5, fill: '#7a5c3e' }, pb);
+  pb.addEventListener('pointerdown', togglePause);
+  // 靜音
+  const mb = el('g', { transform: 'translate(956,32)', class: 'btn' }, h);
+  el('circle', { r: 17, fill: '#cdb4db' }, mb);
+  el('path', { d: 'M -9 -4 L -4 -4 L 2 -9 L 2 9 L -4 4 L -9 4 Z', fill: '#5a4a6e' }, mb);
+  H.wave = el('path', { d: 'M 6 -5 Q 10 0 6 5', fill: 'none', stroke: '#5a4a6e', 'stroke-width': 2, 'stroke-linecap': 'round' }, mb);
+  H.mx = el('path', { d: 'M 5 -4 L 11 4 M 11 -4 L 5 4', stroke: '#5a4a6e', 'stroke-width': 2, 'stroke-linecap': 'round', style: 'display:none' }, mb);
+  mb.addEventListener('pointerdown', toggleMute);
+}
+
+function updateHUD() {
+  if (!G.min) return;
+  const m = Math.min(G.min, END_MIN);
+  const hh = Math.floor(m / 60), mm = Math.floor(m % 60);
+  H.time.textContent = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  H.score.textContent = G.score;
+  H.sent.textContent = G.sent;
+  const q = G.waiting.length;
+  H.queue.textContent = q + ' 人';
+  const danger = q >= D.qmax - 2;
+  H.queue.setAttribute('fill', danger ? '#e63946' : '#5a4a42');
+  H.queue.classList.toggle('warn', q >= D.qmax - 1);
+  H.anger.forEach((c, i) => c.setAttribute('fill', i < G.anger ? '#ff6b6b' : '#ece4da'));
+  H.combo.textContent = G.combo >= 2 ? `連擊 ×${G.combo}` : '';
+  H.hourHand.setAttribute('transform', `rotate(${(m / 60 % 12) * 30})`);
+  H.minHand.setAttribute('transform', `rotate(${(m % 60) * 6})`);
+}
+
+/* ========== 主管 ========== */
+function buildBoss() {
+  const b = L.boss;
+  H.dim = el('rect', { width: 1000, height: 650, fill: '#3a2a2a', class: 'fade nopoint', style: 'opacity:0' }, b);
+  const g = el('g', {}, b);
+  H.bossG = g;
+  // 身體
+  el('ellipse', { cx: -92, cy: -60, rx: 22, ry: 40, fill: '#3f4d6b', transform: 'rotate(18 -92 -60)' }, g);
+  el('ellipse', { cx: 92, cy: -60, rx: 22, ry: 40, fill: '#3f4d6b', transform: 'rotate(-18 92 -60)' }, g);
+  el('rect', { x: -95, y: -125, width: 190, height: 140, rx: 52, fill: '#4a5a7a' }, g);
+  el('polygon', { points: '-32,-124 32,-124 0,-58', fill: '#fff' }, g);
+  el('polygon', { points: '-9,-118 9,-118 13,-75 0,-58 -13,-75', fill: '#e63946' }, g);
+  el('rect', { x: 50, y: -100, width: 26, height: 6, rx: 2, fill: '#ffd166' }, g);
+  // 頭
+  el('circle', { cx: -62, cy: -175, r: 13, fill: '#ffc9a0' }, g);
+  el('circle', { cx: 62, cy: -175, r: 13, fill: '#ffc9a0' }, g);
+  el('circle', { cx: 0, cy: -178, r: 62, fill: '#ffd6b0' }, g);
+  el('ellipse', { cx: -54, cy: -198, rx: 13, ry: 20, fill: '#6b6b6b' }, g);
+  el('ellipse', { cx: 54, cy: -198, rx: 13, ry: 20, fill: '#6b6b6b' }, g);
+  el('ellipse', { cx: -14, cy: -224, rx: 18, ry: 8, fill: '#fff', opacity: .5 }, g);
+  // 眉毛、眼鏡、眼睛
+  el('path', { d: 'M -44 -212 L -10 -198 M 44 -212 L 10 -198', stroke: '#333', 'stroke-width': 8, 'stroke-linecap': 'round' }, g);
+  el('circle', { cx: -24, cy: -182, r: 16, fill: '#fff', opacity: .45, stroke: '#333', 'stroke-width': 4 }, g);
+  el('circle', { cx: 24, cy: -182, r: 16, fill: '#fff', opacity: .45, stroke: '#333', 'stroke-width': 4 }, g);
+  el('line', { x1: -8, y1: -184, x2: 8, y2: -184, stroke: '#333', 'stroke-width': 4 }, g);
+  el('circle', { cx: -22, cy: -180, r: 5, fill: '#333' }, g);
+  el('circle', { cx: 22, cy: -180, r: 5, fill: '#333' }, g);
+  el('ellipse', { cx: -42, cy: -152, rx: 12, ry: 7, fill: '#ff6b6b', opacity: .7 }, g);
+  el('ellipse', { cx: 42, cy: -152, rx: 12, ry: 7, fill: '#ff6b6b', opacity: .7 }, g);
+  // 嘴巴 & 鬍子
+  el('ellipse', { cx: 0, cy: -132, rx: 16, ry: 12, fill: '#8b2635' }, g);
+  el('ellipse', { cx: 0, cy: -126, rx: 8, ry: 4.5, fill: '#ff8fa3' }, g);
+  el('path', { d: 'M -36 -150 Q -18 -166 0 -152 Q 18 -166 36 -150 Q 20 -139 0 -147 Q -20 -139 -36 -150 Z', fill: '#555' }, g);
+  // 青筋
+  el('path', { d: 'M 38 -232 Q 45 -232 45 -239 M 51 -239 Q 51 -232 58 -232 M 58 -226 Q 51 -226 51 -219 M 45 -219 Q 45 -226 38 -226', fill: 'none', stroke: '#e63946', 'stroke-width': 4, 'stroke-linecap': 'round' }, g);
+  // 冒煙
+  for (const [px, py, dl] of [[-46, -248, 0], [-30, -262, .3], [46, -252, .5], [30, -266, .15]]) {
+    const c = el('circle', { cx: px, cy: py, r: 10, fill: '#fff', stroke: '#ddd', 'stroke-width': 2, class: 'puff' }, g);
+    c.style.animationDelay = dl + 's';
+  }
+
+  // 對話框
+  const bb = el('g', { class: 'fade nopoint', style: 'opacity:0' }, b);
+  H.bossBubble = bb;
+  el('path', { d: 'M 738 345 L 800 382 L 738 378', fill: '#fff', stroke: '#e63946', 'stroke-width': 4, 'stroke-linejoin': 'round' }, bb);
+  el('rect', { x: 290, y: 290, width: 452, height: 124, rx: 26, fill: '#fff', stroke: '#e63946', 'stroke-width': 4 }, bb);
+  el('rect', { x: 736, y: 348, width: 8, height: 28, fill: '#fff' }, bb);
+  el('rect', { x: 304, y: 272, width: 128, height: 34, rx: 17, fill: '#e63946' }, bb);
+  H.bossBadge = el('text', { x: 368, y: 295, 'text-anchor': 'middle', 'font-size': 17, 'font-weight': 900, fill: '#fff', text: '怒氣 1/3' }, bb);
+  H.bossL1 = el('text', { x: 516, y: 345, 'text-anchor': 'middle', 'font-size': 24, 'font-weight': 900, fill: '#5a3a3a', text: '' }, bb);
+  H.bossL2 = el('text', { x: 516, y: 385, 'text-anchor': 'middle', 'font-size': 21, 'font-weight': 800, fill: '#7a4a4a', text: '' }, bb);
+  el('text', { x: 730, y: 408, 'text-anchor': 'end', 'font-size': 11, fill: '#b08968', text: '點一下繼續' }, bb);
+  applyBoss();
+}
+function applyBoss() { H.bossG.setAttribute('transform', `translate(${boss.x} 650) scale(1.35)`); }
+
+function scold(msg) {
+  if (G.state !== 'playing') return;
+  G.anger++; G.combo = 0;
+  boss.active = true; boss.elapsed = 0; boss.tx = 860;
+  const [a, b] = msg.split('\n');
+  H.bossL1.textContent = a; H.bossL2.textContent = b || '';
+  H.bossBadge.textContent = `怒氣 ${G.anger}/3`;
+  H.dim.style.opacity = .3;
+  H.bossBubble.style.opacity = 1;
+  hideGhost();
+  sfx.error();
+  updateHUD();
+}
+function dismissBoss() {
+  boss.active = false; boss.tx = 1250;
+  H.dim.style.opacity = 0; H.bossBubble.style.opacity = 0;
+  if (G.anger >= 3 && G.state === 'playing') { G.state = 'ending'; setTimeout(() => showEnd(false), 450); }
+}
+
+/* ========== 客人 ========== */
+const C_TYPES = ['cat', 'bear', 'bunny', 'chick', 'dog', 'human'];
+const FUR = {
+  cat: ['#ffd8a8', '#f4f1ea', '#d6d6d6', '#f6c28b'], bear: ['#c89f7a', '#a47551', '#e8c39e'],
+  bunny: ['#ffffff', '#f7e1e6', '#ece6dc'], chick: ['#ffe066', '#ffd43b'],
+  dog: ['#e9c9a3', '#d4a373', '#f7f1e3'], human: ['#ffe0c7', '#f6cfae', '#e8b995'],
+};
+const SHIRTS = ['#8ecae6', '#ffb4a2', '#b5e48c', '#cdb4db', '#ffd166', '#90dbf4', '#f4978e', '#a3c4f3'];
+function makeCustomer() {
+  const type = pick(C_TYPES), fur = pick(FUR[type]), shirt = pick(SHIRTS);
+  const g = el('g', {}, L.queue);
+  const inner = el('g', { class: 'bob' }, g);
+  inner.style.animationDelay = (-Math.random()).toFixed(2) + 's';
+  const dark = '#3a2a2a';
+  // 耳朵（頭後面）
+  if (type === 'cat') {
+    el('polygon', { points: '-38,-126 -30,-162 -8,-146', fill: fur }, inner);
+    el('polygon', { points: '38,-126 30,-162 8,-146', fill: fur }, inner);
+    el('polygon', { points: '-31,-134 -28,-152 -17,-144', fill: '#ffb3c1' }, inner);
+    el('polygon', { points: '31,-134 28,-152 17,-144', fill: '#ffb3c1' }, inner);
+  } else if (type === 'bear') {
+    el('circle', { cx: -30, cy: -142, r: 14, fill: fur }, inner);
+    el('circle', { cx: 30, cy: -142, r: 14, fill: fur }, inner);
+    el('circle', { cx: -30, cy: -142, r: 7, fill: '#ffc9b9' }, inner);
+    el('circle', { cx: 30, cy: -142, r: 7, fill: '#ffc9b9' }, inner);
+  } else if (type === 'bunny') {
+    el('ellipse', { cx: -16, cy: -164, rx: 10, ry: 28, fill: fur, transform: 'rotate(-8 -16 -164)' }, inner);
+    el('ellipse', { cx: 16, cy: -164, rx: 10, ry: 28, fill: fur, transform: 'rotate(8 16 -164)' }, inner);
+    el('ellipse', { cx: -16, cy: -162, rx: 5, ry: 19, fill: '#ffc2d1', transform: 'rotate(-8 -16 -162)' }, inner);
+    el('ellipse', { cx: 16, cy: -162, rx: 5, ry: 19, fill: '#ffc2d1', transform: 'rotate(8 16 -162)' }, inner);
+  }
+  // 身體
+  el('ellipse', { cx: -40, cy: -42, rx: 11, ry: 22, fill: shirt, transform: 'rotate(14 -40 -42)' }, inner);
+  el('ellipse', { cx: 40, cy: -42, rx: 11, ry: 22, fill: shirt, transform: 'rotate(-14 40 -42)' }, inner);
+  el('rect', { x: -42, y: -82, width: 84, height: 98, rx: 36, fill: shirt }, inner);
+  el('circle', { cx: -45, cy: -22, r: 8, fill: fur }, inner);
+  el('circle', { cx: 45, cy: -22, r: 8, fill: fur }, inner);
+  el('rect', { x: -18, y: -58, width: 36, height: 24, rx: 8, fill: '#fff', opacity: .35 }, inner);
+  // 頭
+  el('circle', { cx: 0, cy: -112, r: 40, fill: fur }, inner);
+  if (type === 'dog') {
+    el('ellipse', { cx: -38, cy: -114, rx: 12, ry: 24, fill: '#9c6b4e', transform: 'rotate(18 -38 -114)' }, inner);
+    el('ellipse', { cx: 38, cy: -114, rx: 12, ry: 24, fill: '#9c6b4e', transform: 'rotate(-18 38 -114)' }, inner);
+  }
+  if (type === 'human') {
+    el('path', { d: 'M -41 -106 C -46 -162 46 -162 41 -106 C 32 -132 -8 -138 -41 -106 Z', fill: pick(['#4a3728', '#2d2a32', '#a0522d', '#e0a96d']) }, inner);
+  }
+  if (type === 'chick') {
+    el('path', { d: 'M -6 -150 Q -4 -164 2 -152 Q 6 -166 10 -150', fill: 'none', stroke: '#f4a261', 'stroke-width': 4, 'stroke-linecap': 'round' }, inner);
+  }
+  // 臉
+  for (const ex of [-14, 14]) {
+    el('circle', { cx: ex, cy: -110, r: 4.8, fill: dark }, inner);
+    el('circle', { cx: ex + 1.6, cy: -111.6, r: 1.6, fill: '#fff' }, inner);
+  }
+  el('ellipse', { cx: -25, cy: -98, rx: 7, ry: 4, fill: '#ff9fb0', opacity: .75 }, inner);
+  el('ellipse', { cx: 25, cy: -98, rx: 7, ry: 4, fill: '#ff9fb0', opacity: .75 }, inner);
+  let happy, sad;
+  if (type === 'chick') {
+    happy = el('polygon', { points: '-7,-100 7,-100 0,-90', fill: '#f4a261' }, inner);
+    sad = el('polygon', { points: '-7,-96 7,-96 0,-104', fill: '#f4a261', style: 'display:none' }, inner);
+  } else {
+    if (type !== 'human') el('ellipse', { cx: 0, cy: -101, rx: 4, ry: 3, fill: type === 'bear' ? '#5a3a2a' : '#ff8fa3' }, inner);
+    happy = el('path', { d: 'M -7 -96 Q 0 -89 7 -96', fill: 'none', stroke: dark, 'stroke-width': 2.6, 'stroke-linecap': 'round' }, inner);
+    sad = el('path', { d: 'M -7 -90 Q 0 -97 7 -90', fill: 'none', stroke: dark, 'stroke-width': 2.6, 'stroke-linecap': 'round', style: 'display:none' }, inner);
+  }
+  const sweat = el('path', { d: 'M 36 -140 Q 43 -129 36 -124 Q 29 -129 36 -140 Z', fill: '#8ecae6', style: 'display:none' }, inner);
+  // 配件
+  const r = Math.random();
+  if (r < .22) {
+    el('polygon', { points: '20,-150 8,-160 8,-140', fill: '#ff5d8f' }, inner);
+    el('polygon', { points: '20,-150 32,-160 32,-140', fill: '#ff5d8f' }, inner);
+    el('circle', { cx: 20, cy: -150, r: 4, fill: '#ff8fab' }, inner);
+  } else if (r < .4) {
+    el('circle', { cx: -14, cy: -110, r: 10, fill: 'none', stroke: '#5a4a42', 'stroke-width': 2.5 }, inner);
+    el('circle', { cx: 14, cy: -110, r: 10, fill: 'none', stroke: '#5a4a42', 'stroke-width': 2.5 }, inner);
+    el('line', { x1: -4, y1: -111, x2: 4, y2: -111, stroke: '#5a4a42', 'stroke-width': 2.5 }, inner);
+  }
+  const c = { g, x: -80, y: 336, s: .78, tx: -80, ty: 336, ts: .78, happy, sad, sweat, mood: false, leaving: false, handed: false };
+  applyCust(c);
+  return c;
+}
+function applyCust(c) { c.g.setAttribute('transform', `translate(${c.x.toFixed(1)} ${c.y.toFixed(1)}) scale(${c.s.toFixed(3)})`); }
+function setMood(c, sadMood) {
+  if (c.mood === sadMood) return;
+  c.mood = sadMood;
+  c.happy.style.display = sadMood ? 'none' : '';
+  c.sad.style.display = sadMood ? '' : 'none';
+  c.sweat.style.display = sadMood ? '' : 'none';
+}
+function layoutQueue() {
+  G.waiting.forEach((c, i) => {
+    c.tx = 452 - i * 62; c.ty = 336; c.ts = .78;
+    c.g.style.display = i < 7 ? '' : 'none';
+  });
+  const extra = G.waiting.length - 7;
+  H.plus.style.display = extra > 0 ? '' : 'none';
+  if (extra > 0) H.plusText.textContent = `+${extra} 人`;
+}
+function spawnCustomer() {
+  const c = makeCustomer();
+  c.item = genItem();
+  G.waiting.push(c); G.all.push(c);
+  layoutQueue();
+  return c;
+}
+
+/* ========== 信件產生 ========== */
+const progress = () => clamp((G.min - START_MIN) / (END_MIN - START_MIN), 0, 1);
+function makeStamps(total, n) {
+  n = Math.min(Math.max(n, Math.ceil(total / 50)), 10, Math.max(1, Math.floor(total / 1.5)));
+  if (n === 1 && DENOMS.includes(total)) return [total];
+  for (let t = 0; t < 600 && n > 1; t++) {
+    const avg = total / n, parts = [];
+    let s = 0;
+    let cands = DENOMS.filter(d => d >= avg * .3 && d <= avg * 1.8);
+    if (!cands.length) cands = DENOMS.filter(d => d <= Math.max(2, avg * 2));
+    for (let i = 0; i < n - 1; i++) { const d = pick(cands); parts.push(d); s += d; }
+    const r = total - s;
+    if (r > 0 && DENOMS.includes(r)) { parts.push(r); return shuffle(parts); }
+  }
+  const parts = []; let rem = total;
+  while (rem > 0) { const d = [...DENOMS].reverse().find(x => x <= rem); parts.push(d); rem -= d; }
+  return shuffle(parts);
+}
+function genItem() {
+  const p = progress();
+  const parcel = Math.random() < .2 + p * .15;
+  const rates = RATES.filter(r => r.type === (parcel ? 'parcel' : 'letter'));
+  const idx = randInt(0, rates.length - 1), r = rates[idx];
+  const lo = idx === 0 ? (parcel ? 501 : 3) : rates[idx - 1].max + 1;
+  const weight = randInt(lo, r.max);
+  const fee = r.fee;
+  let total;
+  if (Math.random() < .6) {
+    total = fee + (Math.random() < .55 ? 0 : randInt(1, 6));
+  } else {
+    const sMax = Math.max(2, Math.round(12 - 10 * p));
+    const sMin = Math.min(sMax, Math.max(1, Math.round(4 - 3 * p)));
+    total = fee - Math.min(fee - 1, randInt(sMin, sMax));
+  }
+  const n = randInt(1 + Math.floor(p * 2), 3 + Math.floor(p * 5));
+  const vals = makeStamps(total, n);
+  return {
+    type: parcel ? 'parcel' : 'letter', weight, fee, vals,
+    meta: vals.map(() => ({ color: pick(COLORS), icon: pick(ICON_KEYS) })),
+    env: pick(ENV), air: Math.random() < .3, name: pick(NAMES), title: pick(['先生', '小姐']),
+    addr: pick(ADDRS), sender: pick(SENDERS), zip: String(randInt(100, 980)),
+  };
+}
+function fixItem(it) {
+  const short = it.fee - it.sum;
+  const d = DENOMS.find(x => x >= short) || 50;
+  return Object.assign({}, it, {
+    vals: [...it.vals, d],
+    meta: [...it.meta, { color: pick(COLORS), icon: pick(ICON_KEYS) }],
+    weighed: false, g: null, stamps: null,
+  });
+}
+
+/* ========== 信件繪製 ========== */
+function renderItem(it) {
+  const g = el('g', {}, L.item);
+  const letter = it.type === 'letter';
+  const W = 340, Hh = letter ? 210 : 220, hw = 170, hh = Hh / 2;
+  el('rect', { x: -hw + 6, y: -hh + 8, width: W, height: Hh, rx: 10, fill: '#7a5a3c', opacity: .16 }, g);
+  let bg;
+  if (letter) {
+    bg = it.env;
+    el('rect', { x: -hw, y: -hh, width: W, height: Hh, rx: 10, fill: bg, stroke: '#e6d6c3', 'stroke-width': 2 }, g);
+    if (it.air) {
+      el('rect', { x: -hw + 5, y: -hh + 5, width: W - 10, height: Hh - 10, rx: 6, fill: 'none', stroke: '#e63946', 'stroke-width': 6, 'stroke-dasharray': '14 14' }, g);
+      el('rect', { x: -hw + 5, y: -hh + 5, width: W - 10, height: Hh - 10, rx: 6, fill: 'none', stroke: '#457b9d', 'stroke-width': 6, 'stroke-dasharray': '14 14', 'stroke-dashoffset': 14 }, g);
+    }
+    for (let i = 0; i < 3; i++) {
+      el('rect', { x: -150 + i * 22, y: 28, width: 18, height: 18, rx: 2, fill: 'none', stroke: '#e07a5f', 'stroke-width': 1.5 }, g);
+      el('text', { x: -141 + i * 22, y: 42, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 700, fill: '#5a4a42', text: it.zip[i] }, g);
+    }
+    el('text', { x: -150, y: 66, 'font-size': 14, fill: '#5a4a42', text: it.addr }, g);
+    el('text', { x: -150, y: 94, 'font-size': 20, 'font-weight': 900, fill: '#3d2c2e', text: `${it.name} ${it.title} 收` }, g);
+    el('text', { x: 156, y: 94, 'text-anchor': 'end', 'font-size': 11, fill: '#8a7466', text: `寄件人：${it.sender}` }, g);
+  } else {
+    bg = '#e3b587';
+    el('rect', { x: -hw, y: -hh, width: W, height: Hh, rx: 8, fill: bg, stroke: '#b98656', 'stroke-width': 2 }, g);
+    el('rect', { x: -160, y: -hh, width: 28, height: Hh, fill: '#d29b68', opacity: .8 }, g);
+    el('line', { x1: -hw, y1: -hh + 22, x2: hw, y2: -hh + 22, stroke: '#c99566', 'stroke-width': 1.5, 'stroke-dasharray': '6 5' }, g);
+    el('rect', { x: -116, y: 36, width: 204, height: 66, rx: 8, fill: '#fffaf2', stroke: '#d9c3a5', 'stroke-width': 1.5 }, g);
+    el('text', { x: -104, y: 60, 'font-size': 12.5, fill: '#5a4a42', text: it.addr }, g);
+    el('text', { x: -104, y: 88, 'font-size': 18, 'font-weight': 900, fill: '#3d2c2e', text: `${it.name} ${it.title} 收` }, g);
+    el('rect', { x: 100, y: 38, width: 60, height: 62, rx: 6, fill: '#fff', stroke: '#e63946', 'stroke-width': 2 }, g);
+    el('path', { d: 'M 116 64 v -16 m -5 5 l 5 -5 l 5 5 M 144 64 v -16 m -5 5 l 5 -5 l 5 5', fill: 'none', stroke: '#e63946', 'stroke-width': 2.4, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, g);
+    el('text', { x: 130, y: 80, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#e63946', text: '小心' }, g);
+    el('text', { x: 130, y: 94, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 900, fill: '#e63946', text: '輕放' }, g);
+  }
+  it.stamps = [];
+  it.vals.forEach((v, i) => {
+    const row = Math.floor(i / 5), col = i % 5;
+    const sx = 108 - col * 56, sy = -hh + 12 + row * 66;
+    drawStamp(g, sx, sy, v, it.meta[i], bg);
+    it.stamps.push({ x: sx, y: sy, w: 48, h: 58, v, cancelled: false });
+  });
+  it.markLayer = el('g', {}, g);
+  it.g = g; it.hh = hh;
+  it.sum = it.vals.reduce((a, b) => a + b, 0);
+  it.weighed = false;
+  return g;
+}
+function applyItem(it) {
+  const p = it.pos;
+  it.g.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(${p.s.toFixed(3)})`);
+  it.g.setAttribute('opacity', p.o.toFixed(3));
+}
+function moveItem(it, to, dur) {
+  const from = Object.assign({}, it.pos);
+  return tween(dur, k => {
+    for (const key in to) it.pos[key] = from[key] + (to[key] - from[key]) * k;
+    applyItem(it);
+  });
+}
+
+/* ========== UI 小元件 ========== */
+function say(x, y, text) {
+  const g = el('g', { transform: `translate(${x} ${y})`, class: 'fade' }, L.ui);
+  const w = text.length * 16 + 30;
+  el('path', { d: 'M 12 2 L 4 18 L 30 2', fill: '#fff', stroke: '#e0c3a8', 'stroke-width': 2.5, 'stroke-linejoin': 'round' }, g);
+  el('rect', { x: 0, y: -36, width: w, height: 40, rx: 18, fill: '#fff', stroke: '#e0c3a8', 'stroke-width': 2.5 }, g);
+  el('rect', { x: 10, y: -1, width: 22, height: 4, fill: '#fff' }, g);
+  el('text', { x: w / 2, y: -10, 'text-anchor': 'middle', 'font-size': 16, 'font-weight': 800, fill: '#5a4a42', text }, g);
+  setTimeout(() => { g.style.opacity = 0; }, 1500);
+  setTimeout(() => g.remove(), 1800);
+}
+function popup(text, x, y, color, size = 22, dur = 900) {
+  const t = el('text', { x, y, 'text-anchor': 'middle', 'font-size': size, 'font-weight': 900, fill: color, stroke: '#fff', 'stroke-width': 5, 'paint-order': 'stroke', text }, L.ui);
+  tween(dur, k => { t.setAttribute('y', y - 40 * k); t.setAttribute('opacity', 1 - k * k); }, t => t).then(() => t.remove());
+}
+function resetDisplay() {
+  H.dispType.textContent = '電子秤';
+  H.dispW.textContent = '---- g';
+  H.dispF.textContent = '郵資 -- 元';
+}
+function setHint() {
+  if (G.state !== 'playing') { H.hint.textContent = ''; return; }
+  if (!G.item) H.hint.textContent = '等待下一位客人…';
+  else if (!G.item.weighed) H.hint.textContent = '先按「秤重」看看要多少郵資';
+  else H.hint.textContent = '郵票夠：每張都蓋郵戳再寄出　不夠：退回給客人';
+}
+function canAct() { return G.state === 'playing' && !G.paused && !boss.active && G.desk === 'ready' && G.item; }
+function updateButtons() {
+  const ok = canAct();
+  BTN.weigh.classList.toggle('disabled', !(ok && !G.item.weighed));
+  BTN.ret.classList.toggle('disabled', !(ok && G.item.weighed));
+  BTN.send.classList.toggle('disabled', !(ok && G.item.weighed));
+}
+function addPile() {
+  const r = el('rect', { x: -17, y: -12, width: 34, height: 24, rx: 3, fill: pick(ENV.concat(['#e3b587'])), stroke: '#d8c3a5', 'stroke-width': 1.5,
+    transform: `translate(${randInt(845, 960)} ${randInt(462, 474)}) rotate(${randInt(-30, 30)})` }, H.pile);
+  if (H.pile.childNodes.length > 9) H.pile.removeChild(H.pile.firstChild);
+  return r;
+}
+function hideGhost() { H.ghost.style.display = 'none'; svg.style.cursor = ''; }
+function hitItem(it, p) {
+  const lx = (p.x - it.pos.x) / it.pos.s, ly = (p.y - it.pos.y) / it.pos.s;
+  return Math.abs(lx) <= 170 && Math.abs(ly) <= it.hh;
+}
+
+/* ========== 動作 ========== */
+async function handOver(c) {
+  const rid = G.runId;
+  G.desk = 'busy';
+  const it = c.item; it.cust = c;
+  renderItem(it);
+  G.item = it;
+  it.pos = { x: 560, y: 280, s: .25, o: 0 };
+  applyItem(it);
+  sfx.pop();
+  say(605, 196, pick(GREET));
+  resetDisplay();
+  await moveItem(it, { x: 400, y: 495, s: 1, o: 1 }, 450);
+  if (rid !== G.runId) return;
+  G.desk = 'ready';
+  setHint(); updateButtons();
+}
+
+function stampAt(it, p) {
+  const lx = (p.x - it.pos.x) / it.pos.s, ly = (p.y - it.pos.y) / it.pos.s;
+  const hh = Math.floor(G.min / 60);
+  const m = drawPostmark(it.markLayer, lx, ly, Math.random() * 24 - 12, `${hh} 時`);
+  m.setAttribute('opacity', 0);
+  tween(110, k => m.setAttribute('opacity', (.85 * k).toFixed(2)));
+  sfx.stamp();
+  for (const s of it.stamps) {
+    const cx = clamp(lx, s.x, s.x + s.w), cy = clamp(ly, s.y, s.y + s.h);
+    if (Math.hypot(lx - cx, ly - cy) <= 16) s.cancelled = true;
+  }
+  const base = Object.assign({}, it.pos);
+  tween(140, k => { it.pos.y = base.y + Math.sin(k * Math.PI) * 4; applyItem(it); }, t => t);
+}
+
+async function doWeigh() {
+  if (!canAct() || G.item.weighed) return;
+  const it = G.item, rid = G.runId;
+  G.desk = 'busy'; updateButtons(); hideGhost(); sfx.click();
+  await moveItem(it, { x: 700, y: 410, s: .38 }, 320);
+  if (rid !== G.runId) return;
+  sfx.weigh();
+  H.dispType.textContent = it.type === 'letter' ? '信件' : '包裹';
+  await tween(450, k => { H.dispW.textContent = Math.round(it.weight * k) + ' g'; });
+  if (rid !== G.runId) return;
+  H.dispF.textContent = `郵資 ${it.fee} 元`;
+  tone(990, .12, 'sine', .1);
+  it.weighed = true;
+  await wait(260);
+  await moveItem(it, { x: 400, y: 495, s: 1 }, 320);
+  if (rid !== G.runId) return;
+  G.desk = 'ready'; setHint(); updateButtons();
+}
+
+async function doSend() {
+  if (!canAct() || !G.item.weighed) return;
+  const it = G.item, c = it.cust, rid = G.runId;
+  G.desk = 'busy'; updateButtons(); hideGhost(); sfx.click();
+  await moveItem(it, { x: 902, y: 420, s: .28 }, 380);
+  await moveItem(it, { y: 505, s: .2, o: 0 }, 220);
+  if (rid !== G.runId) return;
+  it.g.remove(); G.item = null;
+  addPile(); G.outCount++;
+  H.binCount.textContent = G.outCount + ' 件';
+  resetDisplay();
+  c.leaving = true; c.tx = 1150;
+  say(605, 196, pick(BYE));
+  G.front = null; G.desk = 'idle';
+  setHint(); updateButtons();
+  // 判定
+  const unc = it.stamps.filter(s => !s.cancelled).length;
+  if (it.sum < it.fee) {
+    scold(`郵資不足還寄出！\n要 ${it.fee} 元，郵票只有 ${it.sum} 元！`);
+  } else if (unc > 0) {
+    scold(`還有 ${unc} 張郵票沒銷戳！\n會被人拿去重複使用的！`);
+  } else {
+    G.combo++;
+    const pts = 10 + Math.min(G.combo - 1, 10);
+    G.score += pts; G.sent++;
+    popup(`+${pts}`, 902, 440, '#2a9d8f', 26);
+    if (G.combo >= 3) popup(`連擊 ×${G.combo}！`, 902, 405, '#e76f51', 20);
+    sfx.ding();
+  }
+}
+
+async function doReturn() {
+  if (!canAct() || !G.item.weighed) return;
+  const it = G.item, c = it.cust, rid = G.runId;
+  G.desk = 'busy'; updateButtons(); hideGhost(); sfx.back();
+  await moveItem(it, { x: 560, y: 280, s: .25, o: 0 }, 380);
+  if (rid !== G.runId) return;
+  it.g.remove(); G.item = null;
+  resetDisplay();
+  G.front = null; G.desk = 'idle';
+  setHint(); updateButtons();
+  if (it.sum >= it.fee) {
+    c.leaving = true; c.tx = 1150;
+    say(605, 196, '我的郵票明明就夠…');
+    scold(`郵資明明就夠了啊！\n${it.sum} 元 ≥ ${it.fee} 元，客人投訴了！`);
+  } else {
+    G.combo++; G.returned++;
+    G.score += 8;
+    popup('+8 退件正確', 560, 250, '#2a9d8f', 22);
+    sfx.ding();
+    if (Math.random() < .5 && G.waiting.length < D.qmax - 2) {
+      c.item = fixItem(it);
+      c.handed = false;
+      G.waiting.push(c);
+      layoutQueue();
+      say(605, 196, '我去補貼郵票！');
+    } else {
+      c.leaving = true; c.tx = 1150;
+      say(605, 196, '好～我再來！');
+    }
+  }
+}
+
+function advance() {
+  const c = G.waiting.shift();
+  G.front = c;
+  c.tx = 560; c.ty = 352; c.ts = 1.05; c.handed = false;
+  c.g.style.display = '';
+  L.queue.appendChild(c.g);
+  setMood(c, false);
+  layoutQueue();
+}
+
+/* ========== 暫停 / 靜音 ========== */
+function togglePause() {
+  if (G.state !== 'playing' || boss.active) return;
+  G.paused = !G.paused;
+  clear(L.pause);
+  if (G.paused) {
+    hideGhost();
+    el('rect', { width: 1000, height: 650, fill: '#3a2a2a', opacity: .45 }, L.pause);
+    el('rect', { x: 350, y: 250, width: 300, height: 140, rx: 28, fill: '#fff8f0', stroke: '#f2cc8f', 'stroke-width': 4 }, L.pause);
+    el('text', { x: 500, y: 315, 'text-anchor': 'middle', 'font-size': 36, 'font-weight': 900, fill: '#e07a5f', text: '休息一下' }, L.pause);
+    el('text', { x: 500, y: 355, 'text-anchor': 'middle', 'font-size': 16, fill: '#a0785a', text: '點一下或按 P 繼續上班' }, L.pause);
+    L.pause.addEventListener('pointerdown', resumeOnce, { once: true });
+  }
+  updateButtons();
+}
+function resumeOnce(e) { e.stopPropagation(); if (G.paused) togglePause(); }
+function toggleMute() {
+  muted = !muted;
+  H.wave.style.display = muted ? 'none' : '';
+  H.mx.style.display = muted ? '' : 'none';
+}
+
+/* ========== 畫面 ========== */
+function overlayButton(parent, x, y, w, h, color, shade, label, sub, onClick) {
+  const g = el('g', { transform: `translate(${x},${y})`, class: 'btn' }, parent);
+  el('rect', { y: 6, width: w, height: h, rx: 22, fill: shade }, g);
+  const f = el('g', { class: 'face' }, g);
+  el('rect', { width: w, height: h, rx: 22, fill: color }, f);
+  el('rect', { x: 14, y: 7, width: w - 28, height: 8, rx: 4, fill: '#fff', opacity: .35 }, f);
+  el('text', { x: w / 2, y: sub ? h / 2 + 3 : h / 2 + 9, 'text-anchor': 'middle', 'font-size': 26, 'font-weight': 900, fill: '#4a3b33', text: label }, f);
+  if (sub) el('text', { x: w / 2, y: h / 2 + 22, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 700, fill: '#6b5446', text: sub }, f);
+  g.addEventListener('click', e => { e.stopPropagation(); onClick(); });
+  return g;
+}
+
+function showStart() {
+  G.state = 'menu';
+  clear(L.overlay); clear(L.pause);
+  const o = L.overlay;
+  el('rect', { width: 1000, height: 650, fill: '#fff6ec', opacity: .97 }, o);
+  el('rect', { width: 1000, height: 650, fill: 'url(#dots)', opacity: .6 }, o);
+  [[70, 70, -12, 8], [860, 90, 10, 25], [90, 520, 8, 5], [870, 500, -8, 50], [180, 210, 14, 12], [800, 280, -14, 3]].forEach(([x, y, r, v]) => {
+    const g = el('g', { transform: `translate(${x},${y}) rotate(${r})` }, o);
+    drawStamp(g, 0, 0, v, { color: pick(COLORS), icon: pick(ICON_KEYS) }, '#fff6ec');
+  });
+  drawMascot(o, 500, 115, true);
+  el('text', { x: 500, y: 222, 'text-anchor': 'middle', 'font-size': 52, 'font-weight': 900, fill: '#e07a5f', stroke: '#fff', 'stroke-width': 8, 'paint-order': 'stroke', text: '郵局蓋章大作戰' }, o);
+  el('text', { x: 500, y: 256, 'text-anchor': 'middle', 'font-size': 18, 'font-weight': 700, fill: '#a0785a', text: '上班時間 08:30 – 17:00，撐到下班就是勝利！' }, o);
+  el('rect', { x: 160, y: 276, width: 680, height: 196, rx: 22, fill: '#fff', stroke: '#f2cc8f', 'stroke-width': 3 }, o);
+  const lines = [
+    '客人遞來信件或包裹，先按「秤重」，秤上會顯示應付郵資。',
+    '心算信上所有郵票的面額加總，跟郵資比一比！',
+    '郵資足夠：點郵票蓋上郵戳（圓圈要蓋到每一張），再「寄出」。',
+    '郵資不足：按「退回」把信推回給客人。',
+    '錯寄、漏蓋、錯退、排隊太長都會被主管罵，罵 3 次就被炒魷魚！',
+  ];
+  lines.forEach((t, i) => {
+    el('circle', { cx: 196, cy: 307 + i * 34, r: 12, fill: COLORS[i] }, o);
+    el('text', { x: 196, y: 312 + i * 34, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 900, fill: '#5a4a42', text: i + 1 }, o);
+    el('text', { x: 220, y: 313 + i * 34, 'font-size': 17, 'font-weight': 700, fill: '#5a4a42', text: t }, o);
+  });
+  overlayButton(o, 205, 494, 180, 66, '#b8e0a8', '#86b878', '輕鬆', '客人少，慢慢來', () => startGame('easy'));
+  overlayButton(o, 410, 494, 180, 66, '#ffd98e', '#d9ac5c', '普通', '標準的一天', () => startGame('normal'));
+  overlayButton(o, 615, 494, 180, 66, '#ffb4a2', '#d98a78', '忙碌', '週一早上的郵局', () => startGame('hard'));
+  el('text', { x: 500, y: 612, 'text-anchor': 'middle', 'font-size': 14, fill: '#a0785a', text: '快捷鍵：W 秤重　R 退回　S 寄出　P 暫停　M 靜音' }, o);
+}
+
+function showEnd(win) {
+  G.state = win ? 'win' : 'over';
+  hideGhost(); clear(L.pause); setHint(); updateButtons();
+  clear(L.overlay);
+  const o = L.overlay;
+  el('rect', { width: 1000, height: 650, fill: win ? '#fff6ec' : '#fdecef', opacity: .97 }, o);
+  el('rect', { width: 1000, height: 650, fill: 'url(#dots)', opacity: .6 }, o);
+  if (win) {
+    const stars = 3 - G.anger;
+    for (let i = 0; i < 3; i++) {
+      const x = 440 + i * 60, y = 58, pts = [];
+      for (let k = 0; k < 10; k++) {
+        const r = k % 2 ? 10 : 24, a = (k * 36 - 90) * Math.PI / 180;
+        pts.push((x + Math.cos(a) * r).toFixed(1) + ',' + (y + Math.sin(a) * r).toFixed(1));
+      }
+      el('polygon', { points: pts.join(' '), fill: i < stars ? '#ffd166' : '#e9e2da', stroke: i < stars ? '#e9a23b' : '#d6ccc2', 'stroke-width': 3, 'stroke-linejoin': 'round' }, o);
+    }
+    drawMascot(o, 500, 170, true);
+  } else {
+    drawSquid(o, 500, 175);
+  }
+  el('text', { x: 500, y: 292, 'text-anchor': 'middle', 'font-size': 46, 'font-weight': 900, fill: win ? '#e07a5f' : '#e63946', stroke: '#fff', 'stroke-width': 8, 'paint-order': 'stroke', text: win ? '下班囉！辛苦了～' : '你被炒魷魚了！' }, o);
+  el('rect', { x: 300, y: 312, width: 400, height: 160, rx: 22, fill: '#fff', stroke: '#f2cc8f', 'stroke-width': 3 }, o);
+  const hh = Math.floor(Math.min(G.min, END_MIN) / 60), mm = Math.floor(Math.min(G.min, END_MIN) % 60);
+  const stats = [
+    ['難度', D.name],
+    [win ? '下班時間' : '撐到', String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0')],
+    ['正確寄出 / 正確退件', `${G.sent} 件 / ${G.returned} 件`],
+    ['主管怒氣', `${G.anger} / 3`],
+    ['總分', String(G.score)],
+  ];
+  stats.forEach(([a, b], i) => {
+    el('text', { x: 330, y: 344 + i * 28, 'font-size': 17, 'font-weight': 700, fill: '#a0785a', text: a }, o);
+    el('text', { x: 670, y: 344 + i * 28, 'text-anchor': 'end', 'font-size': i === 4 ? 22 : 18, 'font-weight': 900, fill: i === 4 ? '#e07a5f' : '#5a4a42', text: b }, o);
+  });
+  overlayButton(o, 390, 498, 220, 66, '#a7dcb9', '#72b58b', '再上一天班', '', showStart);
+  if (win) sfx.ding(); else { tone(392, .25, 'triangle', .12); tone(330, .25, 'triangle', .12, 0, .25); tone(262, .5, 'triangle', .12, 0, .5); }
+}
+
+/* ========== 遊戲開始 ========== */
+function startGame(key) {
+  D = DIFF[key];
+  const rid = (G.runId || 0) + 1;
+  G = { state: 'playing', paused: false, min: START_MIN, score: 0, sent: 0, returned: 0, combo: 0, anger: 0,
+        waiting: [], all: [], front: null, item: null, desk: 'idle', spawnT: 3, queueCD: 0, runId: rid, outCount: 0, lunchShown: false, endShown: false };
+  clear(L.queue); clear(L.item); clear(L.ui); clear(H.pile); clear(L.overlay); clear(L.pause);
+  boss.active = false; boss.x = boss.tx = 1250; applyBoss();
+  H.dim.style.opacity = 0; H.bossBubble.style.opacity = 0;
+  H.binCount.textContent = '0 件';
+  resetDisplay();
+  for (let i = 0; i < 2; i++) spawnCustomer();
+  G.waiting.forEach(c => { c.x = c.tx; applyCust(c); });
+  sfx.ding();
+  setHint(); updateButtons(); updateHUD();
+}
+
+/* ========== 主迴圈 ========== */
+function spawnInterval() {
+  const p = progress();
+  let iv = D.s0 + (D.s1 - D.s0) * p;
+  if (G.min >= 720 && G.min < 780) iv *= .7;   // 午休人潮
+  return iv * (.7 + Math.random() * .6);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  requestAnimationFrame(loop);
+}
+function update(dt) {
+  const running = G.state === 'playing' && !G.paused && !boss.active;
+  if (running) {
+    G.min += dt * D.mps;
+    G.spawnT -= dt;
+    if (G.spawnT <= 0) {
+      spawnCustomer();
+      if (progress() > .5 && Math.random() < .15) spawnCustomer();
+      G.spawnT = spawnInterval();
+    }
+    if (!G.lunchShown && G.min >= 720) { G.lunchShown = true; popup('午休人潮湧入！', 500, 150, '#e07a5f', 34, 1800); }
+    if (!G.endShown && G.min >= 990) { G.endShown = true; popup('再撐 30 分鐘就下班！', 500, 150, '#2a9d8f', 30, 1800); }
+    G.queueCD -= dt;
+    if (G.waiting.length >= D.qmax && G.queueCD <= 0) {
+      for (let k = 0; k < 2 && G.waiting.length; k++) {
+        const c = G.waiting.pop();
+        c.leaving = true; c.tx = -200; c.g.style.display = '';
+        setMood(c, true);
+      }
+      layoutQueue();
+      scold('排隊排到門口了！動作快！\n有客人等不及走掉了！');
+      G.queueCD = 20;
+    }
+    if (G.min >= END_MIN) { G.min = END_MIN; showEnd(true); }
+  }
+
+  if (G.state === 'playing' && !boss.active && !G.front && G.desk === 'idle' && !G.item && G.waiting.length) advance();
+
+  // 客人移動
+  const crowd = G.waiting.length >= D.qmax - 2;
+  G.waiting.forEach(c => setMood(c, crowd));
+  for (let i = G.all.length - 1; i >= 0; i--) {
+    const c = G.all[i];
+    const k = Math.min(1, dt * (c.leaving ? 2.6 : 5));
+    c.x += (c.tx - c.x) * k; c.y += (c.ty - c.y) * k; c.s += (c.ts - c.s) * k;
+    applyCust(c);
+    if (c.leaving && (c.x > 1080 || c.x < -110)) { c.g.remove(); G.all.splice(i, 1); }
+  }
+  if (G.state === 'playing' && G.front && !G.front.handed && Math.abs(G.front.x - 560) < 12) {
+    G.front.handed = true;
+    handOver(G.front);
+  }
+
+  // 主管
+  boss.x += (boss.tx - boss.x) * Math.min(1, dt * 7);
+  applyBoss();
+  if (boss.active) { boss.elapsed += dt; if (boss.elapsed > 3.4) dismissBoss(); }
+
+  if (G.state === 'playing') { updateHUD(); updateButtons(); }
+}
+
+/* ========== 輸入 ========== */
+svg.addEventListener('pointerdown', e => {
+  if (boss.active) { if (boss.elapsed > .6) dismissBoss(); return; }
+  if (G.state !== 'playing' || G.paused) return;
+  const p = toSVG(e);
+  if (canAct() && hitItem(G.item, p)) stampAt(G.item, p);
+});
+svg.addEventListener('pointermove', e => {
+  if (!canAct()) { hideGhost(); return; }
+  const p = toSVG(e);
+  if (hitItem(G.item, p)) {
+    H.ghost.style.display = '';
+    H.ghost.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`);
+    svg.style.cursor = 'none';
+  } else hideGhost();
+});
+svg.addEventListener('pointerleave', hideGhost);
+document.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'm') { toggleMute(); return; }
+  if (G.state !== 'playing') return;
+  if (boss.active) { if (boss.elapsed > .6 && (k === ' ' || k === 'enter')) dismissBoss(); return; }
+  if (k === 'p') togglePause();
+  else if (G.paused) return;
+  else if (k === 'w') doWeigh();
+  else if (k === 'r') doReturn();
+  else if (k === 's') doSend();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && G.state === 'playing' && !G.paused && !boss.active) togglePause();
+});
+
+/* ========== 啟動 ========== */
+buildBG();
+buildDesk();
+buildHUD();
+buildBoss();
+showStart();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
